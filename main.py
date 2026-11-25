@@ -1,9 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
-from models import Product, OrderItem, SaleRecord
+from models import Product, OrderItem, SaleRecord, DataStorage
 from inventory import InventoryManager
 from sales import SalesManager
+from reports import ReportGenerator
 
 
 class SupermarketPOS(tk.Tk):
@@ -20,7 +21,7 @@ class SupermarketPOS(tk.Tk):
         super().__init__()
         self.title("Carrefour POS — Point of Sale System")
         self.state("zoomed")
-        self.minsize(960, 640)
+        self.minsize(1050, 660)
         self.configure(bg=self.BG_DEEP)
 
         # System State
@@ -34,14 +35,16 @@ class SupermarketPOS(tk.Tk):
         # Managers
         self.inventory_mgr = InventoryManager(self)
         self.sales_mgr = SalesManager(self)
+        self.report_mgr = ReportGenerator(self)
 
         self._setup_styles()
-        self._load_default_products()
+        self._load_initial_state()
         self._build_header()
         self._build_button_bar()
         self._build_tabs()
         self._start_clock()
 
+        self.protocol("WM_DELETE_WINDOW", self.exit_with_summary)
         self.refresh_all()
 
     def _setup_styles(self):
@@ -75,7 +78,15 @@ class SupermarketPOS(tk.Tk):
             font=("Georgia", 10, "bold"),
         )
 
-    def _load_default_products(self):
+    def _load_initial_state(self):
+        saved = DataStorage.load_state()
+        if saved and saved.get("products"):
+            self.products = saved["products"]
+            self.sales_log = saved["sales_log"]
+            self.total_revenue = saved["total_revenue"]
+            self.total_sold = saved["total_sold"]
+            return
+
         defaults = [
             ("Milk 1L", "Dairy", 2.50, 80),
             ("Bread Loaf", "Bakery", 1.80, 100),
@@ -157,25 +168,35 @@ class SupermarketPOS(tk.Tk):
 
         buttons_r1 = [
             ("➕ Add Item", self.inventory_mgr.add_product),
+            ("💲 Update Price", self.inventory_mgr.update_price),
+            ("🗑️ Delete Item", self.inventory_mgr.delete_product),
             ("📦 Inventory", self.inventory_mgr.show_inventory),
             ("🔍 Search", self.inventory_mgr.search_product),
+            ("📥 Restock", self.inventory_mgr.restock),
             ("🛒 Add to Cart", self.sales_mgr.add_to_cart),
-            ("✖ Remove", self.sales_mgr.remove_from_cart),
-            ("🛍 View Cart", self.sales_mgr.show_cart),
+            ("✖ Remove Item", self.sales_mgr.remove_from_cart),
         ]
         buttons_r2 = [
+            ("🧹 Clear Cart", self.sales_mgr.clear_cart),
+            ("🛍 View Cart", self.sales_mgr.show_cart),
             ("💳 Checkout", self.sales_mgr.checkout),
-            ("📥 Restock", self.inventory_mgr.restock),
-            ("📊 Report", self.sales_mgr.show_report),
             ("🏷 Discount", self.sales_mgr.set_discount),
+            ("📊 Report", self.sales_mgr.show_report),
             ("📈 Daily Sales", self.sales_mgr.track_daily_sales),
+            ("📄 Export CSV", self.export_csv_report),
             ("🚪 Exit", self.exit_with_summary),
         ]
 
         for text, cmd in buttons_r1:
-            self._make_button(row1, text, cmd).pack(side=tk.LEFT, padx=5)
+            self._make_button(row1, text, cmd).pack(side=tk.LEFT, padx=4)
         for text, cmd in buttons_r2:
-            self._make_button(row2, text, cmd).pack(side=tk.LEFT, padx=5)
+            self._make_button(row2, text, cmd).pack(side=tk.LEFT, padx=4)
+
+    def export_csv_report(self):
+        count = self.report_mgr.export_sales_csv()
+        messagebox.showinfo(
+            "CSV Export", f"✅ Exported {count} sales records to sales_report.csv!"
+        )
 
     def _make_button(self, parent, text, command):
         btn = tk.Button(
@@ -186,8 +207,8 @@ class SupermarketPOS(tk.Tk):
             fg=self.CREAM,
             activebackground=self.PURPLE_HOVER,
             activeforeground=self.CREAM,
-            font=("Georgia", 10, "bold"),
-            width=14,
+            font=("Georgia", 9, "bold"),
+            width=12,
             height=1,
             pady=4,
             relief=tk.FLAT,
@@ -205,6 +226,7 @@ class SupermarketPOS(tk.Tk):
         self.tabs.add(inv_tab, text="📦  Inventory")
         inv_cols = ("ID", "Name", "Category", "Price ($)", "Stock")
         self.inv_tree = self._create_table(inv_tab, inv_cols)
+        self.inv_tree.tag_configure("low_stock", background="#FEE2E2", foreground="#991B1B")
 
         cart_tab = tk.Frame(self.tabs, bg=self.BG_DEEP, padx=10, pady=10)
         self.tabs.add(cart_tab, text="🛒  Cart")
@@ -254,7 +276,10 @@ class SupermarketPOS(tk.Tk):
         return tree
 
     def exit_with_summary(self):
-        if messagebox.askyesno("Exit", "Are you sure you want to exit?"):
+        if messagebox.askyesno("Exit", "Save data and exit the POS system?"):
+            DataStorage.save_state(
+                self.products, self.sales_log, self.total_revenue, self.total_sold
+            )
             self.destroy()
 
     def _set_receipt_text(self, text: str):
@@ -272,10 +297,12 @@ class SupermarketPOS(tk.Tk):
         for row in self.inv_tree.get_children():
             self.inv_tree.delete(row)
         for p in self.products:
+            tags = ("low_stock",) if p.is_low_stock() else ()
             self.inv_tree.insert(
                 "",
                 tk.END,
                 values=(p.product_id, p.name, p.category, f"{p.price:.2f}", p.stock),
+                tags=tags,
             )
 
     def refresh_cart_table(self):
