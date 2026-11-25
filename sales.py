@@ -1,4 +1,3 @@
-
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 import math
@@ -156,6 +155,7 @@ class SalesManager:
             item.product.stock += item.qty
 
         self.app.cart.clear()
+        self.app.discount_percent = 0.0
 
         self.app.refresh_all()
 
